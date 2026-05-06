@@ -14,6 +14,8 @@ from typing import Any
 import uvicorn
 from fastmcp import FastMCP
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import PlainTextResponse
 from starlette.routing import Mount, Route
 
@@ -256,8 +258,18 @@ async def lifespan(app):
             await client.aclose()
 
 
+cors = Middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+    expose_headers=["mcp-session-id", "Mcp-Session-Id"],
+    max_age=86400,
+)
+
 app = Starlette(
     routes=[Route("/health", health), Mount("/", app=mcp_app)],
+    middleware=[cors],
     lifespan=lifespan,
 )
 
