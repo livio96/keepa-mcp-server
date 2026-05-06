@@ -31,8 +31,8 @@ PRICE_TYPES: dict[int, str] = {
     29: "new_fba_alt",
 }
 
-# Price-type indices we expose in the per-product summary.
-SUMMARY_PRICE_INDICES: list[int] = [0, 1, 2, 10, 18]  # amazon, new, used, new_fba, buy_box
+# Price-type indices we expose in the per-product summary, in display order.
+SUMMARY_PRICE_INDICES: list[int] = [18, 0, 1, 2, 10]  # buy_box, amazon, new, used, new_fba
 
 
 def keepa_minutes_to_iso(km: int | None) -> str | None:
@@ -57,6 +57,16 @@ def _value_at(arr: list | None, idx: int, *, is_price: bool = True):
     if v is None or v < 0:
         return None
     return cents_to_usd(v) if is_price else v
+
+
+def _oos_pct_at(arr: list | None, idx: int) -> int | None:
+    """Out-of-stock percentage for a price type. -1 means no data."""
+    if not arr or idx >= len(arr):
+        return None
+    v = arr[idx]
+    if v is None or v < 0:
+        return None
+    return int(v)
 
 
 def _extreme(arr: list | None, idx: int, *, is_price: bool = True) -> dict | None:
@@ -99,10 +109,14 @@ def format_product(p: dict) -> dict:
             "avg_30": _value_at(stats.get("avg30"), idx),
             "avg_90": _value_at(stats.get("avg90"), idx),
             "avg_180": _value_at(stats.get("avg180"), idx),
+            "avg_365": _value_at(stats.get("avg365"), idx),
             "all_time_min": _extreme(stats.get("min"), idx),
             "all_time_max": _extreme(stats.get("max"), idx),
             "interval_min": _extreme(stats.get("minInInterval"), idx),
             "interval_max": _extreme(stats.get("maxInInterval"), idx),
+            "oos_30d_pct": _oos_pct_at(stats.get("outOfStockPercentage30"), idx),
+            "oos_90d_pct": _oos_pct_at(stats.get("outOfStockPercentage90"), idx),
+            "oos_365d_pct": _oos_pct_at(stats.get("outOfStockPercentage365"), idx),
         }
 
     sales_rank = {
@@ -110,6 +124,7 @@ def format_product(p: dict) -> dict:
         "avg_30": _value_at(stats.get("avg30"), 3, is_price=False),
         "avg_90": _value_at(stats.get("avg90"), 3, is_price=False),
         "avg_180": _value_at(stats.get("avg180"), 3, is_price=False),
+        "avg_365": _value_at(stats.get("avg365"), 3, is_price=False),
         "all_time_min": _extreme(stats.get("min"), 3, is_price=False),
         "all_time_max": _extreme(stats.get("max"), 3, is_price=False),
         "interval_min": _extreme(stats.get("minInInterval"), 3, is_price=False),
@@ -158,6 +173,106 @@ def format_product(p: dict) -> dict:
         "buy_box": buy_box,
         "offer_counts": offer_counts,
     }
+
+
+def _fmt_money(v) -> str:
+    return f"${v:,.2f}" if isinstance(v, (int, float)) else "—"
+
+
+def _fmt_pct(v) -> str:
+    return f"{v}%" if isinstance(v, (int, float)) else "—"
+
+
+def _fmt_int(v) -> str:
+    return f"{v:,}" if isinstance(v, (int, float)) else "—"
+
+
+def _fmt_extreme(e: dict | None, *, money: bool = True) -> str:
+    if not e:
+        return "—"
+    val = e.get("value")
+    at = (e.get("at") or "")[:10]
+    if val is None:
+        return "—"
+    formatted = _fmt_money(val) if money else _fmt_int(val)
+    return f"{formatted} ({at})" if at else formatted
+
+
+_PRICE_DISPLAY_ORDER = [
+    ("buy_box", "Buy Box"),
+    ("amazon", "Amazon"),
+    ("new", "New"),
+    ("used", "Used"),
+    ("new_fba", "New FBA"),
+]
+
+
+def build_summary_table(s: dict) -> str:
+    """Keepa-style markdown table summary for a product."""
+    title = s.get("title") or s.get("asin") or "(unknown)"
+    sr = s.get("sales_rank") or {}
+    bb = s.get("buy_box") or {}
+    oc = s.get("offer_counts") or {}
+
+    lines: list[str] = [
+        f"## {title}",
+        "",
+        f"**ASIN:** `{s.get('asin')}`  ·  **Brand:** {s.get('brand') or '—'}  ·  "
+        f"**Monthly Sold:** {_fmt_int(s.get('monthly_sold'))}",
+        f"**Rating:** {s.get('rating') if s.get('rating') is not None else '—'}  ·  "
+        f"**Reviews:** {_fmt_int(s.get('review_count'))}  ·  "
+        f"**Sales Rank (current):** {_fmt_int(sr.get('current'))}",
+        "",
+        "### Price History",
+        "",
+        "| Metric | " + " | ".join(label for _, label in _PRICE_DISPLAY_ORDER) + " |",
+        "|---" * (len(_PRICE_DISPLAY_ORDER) + 1) + "|",
+    ]
+
+    rows: list[tuple[str, callable]] = [
+        ("Current",            lambda p: _fmt_money(p.get("current"))),
+        ("90-day avg",         lambda p: _fmt_money(p.get("avg_90"))),
+        ("180-day avg",        lambda p: _fmt_money(p.get("avg_180"))),
+        ("365-day avg",        lambda p: _fmt_money(p.get("avg_365"))),
+        ("Lowest (all-time)",  lambda p: _fmt_extreme(p.get("all_time_min"))),
+        ("Lowest (365 days)",  lambda p: _fmt_extreme(p.get("interval_min"))),
+        ("Highest (all-time)", lambda p: _fmt_extreme(p.get("all_time_max"))),
+        ("Highest (365 days)", lambda p: _fmt_extreme(p.get("interval_max"))),
+        ("OOS % (30d)",        lambda p: _fmt_pct(p.get("oos_30d_pct"))),
+        ("OOS % (90d)",        lambda p: _fmt_pct(p.get("oos_90d_pct"))),
+        ("OOS % (365d)",       lambda p: _fmt_pct(p.get("oos_365d_pct"))),
+    ]
+
+    for label, fn in rows:
+        cells = " | ".join(fn(s["prices"].get(k, {})) for k, _ in _PRICE_DISPLAY_ORDER)
+        lines.append(f"| **{label}** | {cells} |")
+
+    lines += [
+        "",
+        "### Sales Rank",
+        "",
+        "| Metric | Value |",
+        "|---|---|",
+        f"| Current | {_fmt_int(sr.get('current'))} |",
+        f"| 30-day avg | {_fmt_int(sr.get('avg_30'))} |",
+        f"| 90-day avg | {_fmt_int(sr.get('avg_90'))} |",
+        f"| 180-day avg | {_fmt_int(sr.get('avg_180'))} |",
+        f"| 365-day avg | {_fmt_int(sr.get('avg_365'))} |",
+        f"| Lowest (all-time) | {_fmt_extreme(sr.get('all_time_min'), money=False)} |",
+        f"| Lowest (365 days) | {_fmt_extreme(sr.get('interval_min'), money=False)} |",
+        f"| Highest (all-time) | {_fmt_extreme(sr.get('all_time_max'), money=False)} |",
+        f"| Highest (365 days) | {_fmt_extreme(sr.get('interval_max'), money=False)} |",
+        "",
+        "### Buy Box & Offers",
+        "",
+        f"- **Current Buy Box seller:** {bb.get('current_seller_id') or '—'}  ·  "
+        f"**Is Amazon:** {bb.get('is_amazon')}  ·  **Is FBA:** {bb.get('is_fba')}",
+        f"- **Offer counts** — New: {_fmt_int(oc.get('new'))}  ·  "
+        f"Used: {_fmt_int(oc.get('used'))}  ·  "
+        f"Refurbished: {_fmt_int(oc.get('refurbished'))}  ·  "
+        f"Collectible: {_fmt_int(oc.get('collectible'))}",
+    ]
+    return "\n".join(lines)
 
 
 def format_search_item(it: dict) -> dict:

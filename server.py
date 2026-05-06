@@ -19,7 +19,7 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import PlainTextResponse
 from starlette.routing import Mount, Route
 
-from formatters import format_product, format_search_item
+from formatters import build_summary_table, format_product, format_search_item
 from keepa_client import KeepaClient, KeepaError
 
 API_KEY = os.environ.get("KEEPA_API")
@@ -33,18 +33,22 @@ client = KeepaClient(API_KEY)
 
 
 @mcp.tool
-async def lookup_product(identifier: str, stats_days: int = 90) -> dict:
-    """Look up an Amazon US product by ASIN or UPC/EAN code.
+async def lookup_product(identifier: str, stats_days: int = 365) -> dict:
+    """Look up an Amazon US product by ASIN or UPC/EAN code and return a
+    Keepa-style price-history summary plus a markdown table ready to display.
 
     Returns identity (title, brand, category, manufacturer, model), prices for
-    Amazon / 3rd-party New / Used / FBA / Buy Box (current, avg-30/90/180,
-    all-time min & max with timestamps, interval min & max with timestamps),
-    sales-rank stats, monthly-sold estimate, Buy Box ownership info,
-    offer counts, rating, and review count.
+    Buy Box / Amazon / 3rd-party New / Used / FBA (current, avg-30/90/180/365,
+    all-time min & max with timestamps, interval min & max with timestamps,
+    out-of-stock % over 30/90/365 days), sales-rank stats, monthly-sold
+    estimate, Buy Box ownership info, offer counts, rating, review count, and
+    a `summary_table` markdown string suitable for direct rendering.
 
     Args:
         identifier: 10-character ASIN (e.g. "B08N5WRWNW") or UPC/EAN digits.
-        stats_days: Window for interval min/max & avg, in days (1-365). Default 90.
+        stats_days: Window in days for interval extremes & out-of-stock %.
+            Default 365 so the response includes both all-time and 365-day
+            extremes (matches Keepa's website table).
     """
     ident = identifier.strip()
     is_asin = len(ident) == 10 and ident[0].isalpha() and ident.isalnum()
@@ -65,6 +69,7 @@ async def lookup_product(identifier: str, stats_days: int = 90) -> dict:
     summary = format_product(products[0])
     summary["tokens_left"] = data.get("tokensLeft")
     summary["refill_in_ms"] = data.get("refillIn")
+    summary["summary_table"] = build_summary_table(summary)
     return summary
 
 
