@@ -54,6 +54,7 @@ class KeepaClient:
         code: str | None = None,
         stats_days: int = 90,
         offers: int = 20,
+        history: bool = True,
     ) -> dict:
         if not asin and not code:
             raise ValueError("product() requires asin or code")
@@ -63,6 +64,7 @@ class KeepaClient:
             "buybox": 1,
             "offers": offers,
             "rating": 1,
+            "history": 1 if history else 0,
         }
         if asin:
             params["asin"] = asin

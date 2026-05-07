@@ -1,8 +1,11 @@
 """Shape Keepa raw responses into compact, LLM-friendly summaries."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import calendar
+from datetime import date, datetime, timezone
 from typing import Any
+
+KEEPA_EPOCH_OFFSET_MIN = 21564000
 
 # Keepa Price Type index → friendly name (subset; covers everything we surface).
 PRICE_TYPES: dict[int, str] = {
@@ -273,6 +276,83 @@ def build_summary_table(s: dict) -> str:
         f"Collectible: {_fmt_int(oc.get('collectible'))}",
     ]
     return "\n".join(lines)
+
+
+def _subtract_months(d: date, months: int) -> date:
+    year, month = d.year, d.month - months
+    while month <= 0:
+        month += 12
+        year -= 1
+    last_day = calendar.monthrange(year, month)[1]
+    return date(year, month, min(d.day, last_day))
+
+
+def _date_to_keepa_minutes(d: date) -> int:
+    epoch_min = int(datetime(d.year, d.month, d.day, tzinfo=timezone.utc).timestamp() // 60)
+    return epoch_min - KEEPA_EPOCH_OFFSET_MIN
+
+
+def _extract_monthly_sold_pairs(p: dict) -> list[tuple[int, int]]:
+    """Return [(keepaMinutes, value), ...] from monthlySoldHistory or csv[27]."""
+    arr = p.get("monthlySoldHistory")
+    if not arr:
+        csv = p.get("csv") or []
+        if len(csv) > 27 and csv[27]:
+            arr = csv[27]
+    if not arr:
+        return []
+    return [(arr[i], arr[i + 1]) for i in range(0, len(arr) - 1, 2)]
+
+
+def build_monthly_sold_history(p: dict, months: int = 12, *, today: date | None = None) -> dict:
+    """Build a month-to-month rolling-30d sold table for the last `months` months.
+
+    Anchors are today, today-1mo, ..., today-(months-1)mo (rendered chronologically,
+    oldest first). For each anchor, picks the latest snapshot at or before that
+    date (forward-fill). Missing data renders as '—'.
+    """
+    months = max(1, min(int(months), 36))
+    today = today or datetime.now(timezone.utc).date()
+    pairs = _extract_monthly_sold_pairs(p)
+    pairs.sort(key=lambda x: x[0])
+
+    anchors = [_subtract_months(today, i) for i in range(months)]
+    anchors.reverse()  # oldest first
+
+    rows: list[dict] = []
+    for anchor in anchors:
+        anchor_min = _date_to_keepa_minutes(anchor)
+        snap_value: int | None = None
+        snap_when: int | None = None
+        for km, v in pairs:
+            if km > anchor_min:
+                break
+            snap_value, snap_when = v, km
+        if snap_value is None or snap_value < 0:
+            display, value = "—", None
+        else:
+            display, value = f"{snap_value:,}", snap_value
+        rows.append({
+            "month": anchor.strftime("%b %Y"),
+            "anchor_date": anchor.isoformat(),
+            "monthly_sold": value,
+            "monthly_sold_display": display,
+            "snapshot_date": keepa_minutes_to_iso(snap_when)[:10] if snap_when else None,
+        })
+
+    table_lines = ["| Month | Monthly Sold |", "| --- | --- |"]
+    for r in rows:
+        table_lines.append(f"| {r['month']} | {r['monthly_sold_display']} |")
+
+    return {
+        "asin": p.get("asin"),
+        "title": p.get("title"),
+        "months_requested": months,
+        "as_of": today.isoformat(),
+        "rows": rows,
+        "table": "\n".join(table_lines),
+        "has_history": bool(pairs),
+    }
 
 
 def format_search_item(it: dict) -> dict:

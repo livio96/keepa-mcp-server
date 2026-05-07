@@ -19,7 +19,12 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import PlainTextResponse
 from starlette.routing import Mount, Route
 
-from formatters import build_summary_table, format_product, format_search_item
+from formatters import (
+    build_monthly_sold_history,
+    build_summary_table,
+    format_product,
+    format_search_item,
+)
 from keepa_client import KeepaClient, KeepaError
 
 API_KEY = os.environ.get("KEEPA_API")
@@ -71,6 +76,45 @@ async def lookup_product(identifier: str, stats_days: int = 365) -> dict:
     summary["refill_in_ms"] = data.get("refillIn")
     summary["summary_table"] = build_summary_table(summary)
     return summary
+
+
+@mcp.tool
+async def get_monthly_sold_history(asin: str, months: int = 12) -> dict:
+    """Return a month-to-month rolling-30-day sold count for an Amazon US ASIN,
+    going back `months` months from today.
+
+    Each row is a snapshot of Keepa's `monthlySold` metric (rolling 30-day sold
+    count at that point in time, not a calendar-month total). For each anchor
+    date the latest snapshot at or before that date is used (forward-filled);
+    months with no data render as '—'.
+
+    Args:
+        asin: 10-character ASIN (e.g. "B08N5WRWNW").
+        months: Number of monthly anchors back from today, 1-36 (default 12).
+
+    Returns a dict with `rows`, a markdown `table`, and metadata.
+    """
+    ident = asin.strip()
+    if not (len(ident) == 10 and ident[0].isalpha() and ident.isalnum()):
+        return {"error": f"'{asin}' is not a valid ASIN."}
+    try:
+        data = await client.product(asin=ident, history=True)
+    except KeepaError as e:
+        return {"error": str(e)}
+
+    products = data.get("products") or []
+    if not products:
+        return {"error": f"No product found for '{asin}'."}
+
+    result = build_monthly_sold_history(products[0], months=months)
+    result["tokens_left"] = data.get("tokensLeft")
+    result["refill_in_ms"] = data.get("refillIn")
+    if not result.get("has_history"):
+        result["warning"] = (
+            "No monthlySoldHistory returned for this ASIN — Keepa may not track "
+            "the monthly-sold badge for this product."
+        )
+    return result
 
 
 @mcp.tool
